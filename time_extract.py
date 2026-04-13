@@ -139,16 +139,30 @@ def extract_time_ocr(
     text = text.replace('O', '0').replace('l', '1').replace('I', '1')
     text = re.sub(r'[^\d\-/: ]', '', text).strip()
 
+    # 尝试多种时间格式
+    formats_to_try = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d%H:%M:%S",        # 无空格
+        "%Y/%m/%d%H:%M:%S",        # 无空格
+        "%d-%m-%Y %H:%M:%S",
+        "%Y%m%d %H%M%S",
+        "%Y%m%d%H%M%S",
+    ]
+
+    # 特殊处理：修复 OCR 常见错误
+    # 例如 "2025/06/1611:35:16" -> "2025/06/16 11:35:16"
+    # 匹配 YYYY/MM/DDHH:MM:SS 或 YYYY-MM-DDHH:MM:SS
+    m = re.match(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(\d{2}):(\d{2}):(\d{2})$', text)
+    if m:
+        text = f"{m.group(1)}/{m.group(2)}/{m.group(3)} {m.group(4)}:{m.group(5)}:{m.group(6)}"
+        formats_to_try.insert(0, "%Y/%m/%d %H:%M:%S")
+
     try:
         return datetime.strptime(text, time_format)
     except ValueError:
         # 尝试常见变体
-        for fmt in [
-            "%Y-%m-%d %H:%M:%S",
-            "%Y/%m/%d %H:%M:%S",
-            "%d-%m-%Y %H:%M:%S",
-            "%Y%m%d %H%M%S",
-        ]:
+        for fmt in formats_to_try:
             try:
                 return datetime.strptime(text, fmt)
             except ValueError:
@@ -160,6 +174,18 @@ def extract_time_ocr(
 def extract_time_filename(filepath: str, pattern: str) -> Optional[datetime]:
     """从文件名中解析时间"""
     filename = Path(filepath).stem
+    
+    # 尝试两种方式：14位时间戳或标准正则
+    # 方式1: 直接匹配14位数字时间戳 (20250616113517)
+    m = re.search(r'(\d{14})', filename)
+    if m:
+        time_str = m.group(1)
+        try:
+            return datetime.strptime(time_str, "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+    
+    # 方式2: 使用自定义正则pattern
     match = re.search(pattern, filename)
     if match:
         groups = match.groups()
@@ -209,10 +235,14 @@ def scan_folder(
     method: str = "ocr",
     ocr_region: dict = {},
     time_format: str = "%Y-%m-%d %H:%M:%S",
-    filename_pattern: str = r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})"
+    filename_pattern: str = r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})",
+    start_time_filter: Optional[datetime] = None
 ) -> List[VideoSegment]:
     """
     扫描一个文件夹，返回所有视频片段的时间信息
+
+    参数:
+        start_time_filter: 只返回晚于此时间的视频片段
     """
     video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.flv', '.ts', '.wmv', '.m4v'}
 
@@ -277,7 +307,18 @@ def scan_folder(
 
     # 按开始时间排序
     segments.sort(key=lambda s: s.start_time)
-    
+
+    # 根据开始时间过滤
+    if start_time_filter:
+        original_count = len(segments)
+        # 过滤：只保留结束时间晚于 start_time_filter 的片段
+        # （因为视频可能跨越过滤时间点，只要部分内容在过滤时间之后就应该保留）
+        segments = [s for s in segments if s.end_time > start_time_filter]
+
+        if segments:
+            print(f"  ⏰ 过滤开始时间 {start_time_filter.strftime('%Y-%m-%d %H:%M:%S')}: "
+                  f"保留 {len(segments)}/{original_count} 个片段")
+
     if segments:
         print(f"  ✅ 有效片段 {len(segments)} 个, "
               f"时间范围: {segments[0].start_time} ~ {segments[-1].end_time}")

@@ -21,12 +21,12 @@ class TimeSlot:
 def build_timeline(
     all_segments: Dict[int, List[VideoSegment]],
     fps: float = 25
-) -> List[TimeSlot]:
+) -> Tuple[List[TimeSlot], Optional[Tuple[datetime, datetime]]]:
     """
     根据所有监控的视频片段，构建全局时间轴
-    
+
     all_segments: {cam_index: [VideoSegment, ...]}
-    返回: 按时间排序的 TimeSlot 列表
+    返回: (按时间排序的 TimeSlot 列表, (原始开始时间, 原始结束时间))
     """
     # 1. 收集所有时间边界点
     boundaries = set()
@@ -36,9 +36,11 @@ def build_timeline(
             boundaries.add(seg.end_time)
 
     if not boundaries:
-        return []
+        return [], None
 
     boundaries = sorted(boundaries)
+    original_start = boundaries[0]
+    original_end = boundaries[-1]
 
     # 2. 在相邻边界点之间创建时间段
     time_slots = []
@@ -66,12 +68,16 @@ def build_timeline(
                     slot.sources[cam_idx] = (seg.filepath, offset)
                     break
 
+        # 4. 如果没有任何监控有画面，跳过这个时间段
+        if not slot.sources:
+            continue
+
         time_slots.append(slot)
 
-    # 4. 合并连续的、源相同的时间段（减少 FFmpeg 调用次数）
+    # 5. 合并连续的、源相同的时间段（减少 FFmpeg 调用次数）
     merged = merge_consecutive_slots(time_slots, all_segments)
 
-    return merged
+    return merged, (original_start, original_end)
 
 
 def merge_consecutive_slots(
@@ -125,7 +131,8 @@ def merge_consecutive_slots(
 
 def print_timeline_summary(
     time_slots: List[TimeSlot],
-    num_cams: int
+    num_cams: int,
+    original_time_range: Optional[Tuple[datetime, datetime]] = None
 ):
     """打印时间轴摘要"""
     if not time_slots:
@@ -138,7 +145,20 @@ def print_timeline_summary(
 
     print(f"\n📊 时间轴摘要:")
     print(f"  总时间范围: {overall_start} ~ {overall_end}")
-    print(f"  总时长: {total_duration:.1f}秒 ({total_duration/3600:.2f}小时)")
+
+    # 如果提供了原始时间范围，显示优化效果
+    if original_time_range:
+        orig_start, orig_end = original_time_range
+        original_total = (orig_end - orig_start).total_seconds()
+        saved_duration = original_total - total_duration
+        saved_pct = (saved_duration / original_total * 100) if original_total > 0 else 0
+
+        print(f"  原始时间跨度: {original_total:.1f}秒 ({original_total/3600:.2f}小时)")
+        print(f"  ✨ 实际输出时长: {total_duration:.1f}秒 ({total_duration/3600:.2f}小时)")
+        print(f"  💾 跳过空白时段: {saved_duration:.1f}秒 ({saved_pct:.1f}%)")
+    else:
+        print(f"  总时长: {total_duration:.1f}秒 ({total_duration/3600:.2f}小时)")
+
     print(f"  时间段数量: {len(time_slots)}")
     print(f"  监控数量: {num_cams}")
 

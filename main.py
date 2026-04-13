@@ -18,7 +18,7 @@ from datetime import datetime
 
 from time_extract import scan_folder, VideoSegment
 from timeline import build_timeline, print_timeline_summary
-from merge import merge_videos
+from merge import merge_videos, get_layout
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -27,6 +27,49 @@ def load_config(config_path: str = "config.yaml") -> dict:
         with open(config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     return {}
+
+
+def print_layout_diagram(num_cams: int, folder_paths: List[str]):
+    """
+    显示布局图示，让用户清楚看到每个监控在视频中的位置
+    """
+    cols, rows = get_layout(num_cams)
+
+    print(f"\n📺 布局图示 ({cols}x{rows}):")
+    print("   " + "─" * (cols * 9))
+
+    for row in range(rows):
+        print("   ", end="")
+        for col in range(cols):
+            cam_idx = row * cols + col
+            if cam_idx < num_cams:
+                folder_name = Path(folder_paths[cam_idx]).name
+                # 截断过长的文件夹名
+                if len(folder_name) > 6:
+                    folder_name = folder_name[:6] + ".."
+                print(f"│监控{cam_idx+1}", end="")
+            else:
+                print(f"│      ", end="")
+        print("│")
+        print("   " + "─" * (cols * 9))
+
+    print("\n📍 监控位置对应表:")
+    for i, folder in enumerate(folder_paths):
+        cols, rows = get_layout(num_cams)
+        col = i % cols
+        row = i // cols
+        pos_map = {
+            (0, 0): "左上角",
+            (1, 0): "右上角",
+            (0, 1): "左下角",
+            (1, 1): "右下角",
+            (2, 0): "最左上",
+            (2, 1): "最右上",
+            (2, 2): "最左下",
+            (2, 3): "最右下",
+        }
+        position = pos_map.get((col, row), f"第{col+1}列, 第{row+1}行")
+        print(f"   监控{i+1}: {position} -> {folder}")
 
 
 def check_dependencies():
@@ -139,9 +182,30 @@ def main():
         help='仅检查依赖和扫描文件，不执行合并'
     )
     parser.add_argument(
+        '--no-timestamp',
+        action='store_true',
+        help='禁用时间戳水印'
+    )
+    parser.add_argument(
         '--temp-dir',
         default=None,
         help='临时文件目录'
+    )
+    parser.add_argument(
+        '--crf',
+        type=int,
+        default=None,
+        help='视频压缩质量 (23-32，数值越大文件越小)'
+    )
+    parser.add_argument(
+        '--preset',
+        default=None,
+        help='编码速度 (ultrafast/superfast/veryfast/faster/fast/medium/slow)'
+    )
+    parser.add_argument(
+        '--start-time',
+        default=None,
+        help='开始时间（只合并此时间之后的视频），格式：YYYY-MM-DD HH:MM:SS'
     )
 
     args = parser.parse_args()
@@ -162,11 +226,25 @@ def main():
     output_file = args.output or config.get('output_file', './output/merged.mp4')
     method = args.method or config.get('time_extract_method', 'ocr')
     fps = args.fps or config.get('fps', 25)
+    crf = args.crf or config.get('crf', 28)
+    preset = args.preset or config.get('preset', 'faster')
     time_format = args.time_format or config.get('time_format', '%Y-%m-%d %H:%M:%S')
     filename_pattern = (args.filename_pattern or
                         config.get('filename_pattern',
                                    r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})'))
     ocr_region = config.get('ocr_region', {'x': 0, 'y': 0, 'w': 0.35, 'h': 0.06})
+
+    # 解析开始时间
+    start_time_str = args.start_time or config.get('start_time')
+    start_time = None
+    if start_time_str:
+        try:
+            start_time = datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            print(f"❌ 开始时间格式错误: {start_time_str}")
+            print("   请使用格式: YYYY-MM-DD HH:MM:SS")
+            print("   例如: 2024-01-01 08:00:00")
+            sys.exit(1)
 
     if args.resolution:
         parts = args.resolution.lower().split('x')
@@ -202,10 +280,17 @@ def main():
                          {'.mp4', '.avi', '.mkv', '.mov', '.flv', '.ts'}])
         print(f"   监控{i+1}: {folder} ({file_count} 个视频)")
 
+    # 显示布局图示
+    print_layout_diagram(num_cams, valid_folders)
+
     print(f"\n⚙ 设置:")
     print(f"   时间提取: {method}")
     print(f"   输出分辨率: {output_width}x{output_height}")
     print(f"   帧率: {fps}")
+    print(f"   压缩质量: CRF={crf}")
+    print(f"   编码速度: preset={preset}")
+    if start_time:
+        print(f"   ⏰ 开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (只合并此时间之后的视频)")
     print(f"   输出文件: {output_file}")
 
     # ========== 第一步：扫描所有文件夹 ==========
@@ -222,6 +307,7 @@ def main():
             ocr_region=ocr_region,
             time_format=time_format,
             filename_pattern=filename_pattern,
+            start_time_filter=start_time,
         )
         all_segments[i] = segments
 
@@ -240,8 +326,8 @@ def main():
     print(f"📐 第二步：构建全局时间轴")
     print(f"{'='*60}")
 
-    time_slots = build_timeline(all_segments, fps=fps)
-    print_timeline_summary(time_slots, num_cams)
+    time_slots, original_time_range = build_timeline(all_segments, fps=fps)
+    print_timeline_summary(time_slots, num_cams, original_time_range)
 
     if args.check:
         print("\n✅ 检查完成（--check 模式，不执行合并）")
@@ -271,6 +357,9 @@ def main():
         output_height=output_height,
         fps=fps,
         temp_dir=args.temp_dir,
+        show_timestamp=not args.no_timestamp,
+        crf=crf,
+        preset=preset,
     )
 
 

@@ -43,7 +43,9 @@ def build_segment_ffmpeg_cmd(
     output_height: int,
     fps: float,
     output_path: str,
-    show_timestamp: bool = True
+    show_timestamp: bool = True,
+    crf: int = 28,
+    preset: str = "faster"
 ) -> List[str]:
     """
     为一个时间段构建 FFmpeg 命令
@@ -106,10 +108,12 @@ def build_segment_ffmpeg_cmd(
     # 可选：添加时间戳水印
     if show_timestamp:
         time_str = slot.start_time.strftime('%Y-%m-%d %H:%M:%S')
+        # 冒号需要转义，否则 FFmpeg 解析出错
+        time_str_escaped = time_str.replace(':', '\\:')
         final_label = "final"
         filter_parts.append(
             f"[{current_base}]drawtext="
-            f"text='{time_str}':"
+            f"text='{time_str_escaped}':"
             f"fontsize=24:fontcolor=white:"
             f"x=10:y={output_height - 40}:"
             f"box=1:boxcolor=black@0.5:boxborderw=5"
@@ -134,8 +138,8 @@ def build_segment_ffmpeg_cmd(
         '-filter_complex', filter_complex,
         '-map', f'[{output_label}]',
         '-c:v', 'libx264',
-        '-preset', 'fast',
-        '-crf', '23',
+        '-preset', preset,
+        '-crf', str(crf),
         '-r', str(fps),
         '-pix_fmt', 'yuv420p',
         '-an',  # 暂不处理音频
@@ -154,14 +158,21 @@ def merge_videos(
     fps: float = 25,
     temp_dir: str = "",
     max_segment_duration: float = 300,  # 每个临时片段最长5分钟
+    show_timestamp: bool = True,
+    crf: int = 28,
+    preset: str = "faster",
 ):
     """
     主合并函数
-    
+
     策略：
     1. 将时间轴分成可管理的小段
     2. 每段用 FFmpeg 生成临时视频
     3. 最后用 FFmpeg concat 合并所有临时视频
+
+    参数:
+        crf: 压缩质量 (23-32，数值越大文件越小)
+        preset: 编码速度 (ultrafast~veryslow)
     """
     if not time_slots:
         print("⚠ 没有可合并的时间段")
@@ -235,7 +246,9 @@ def merge_videos(
             output_height=output_height,
             fps=fps,
             output_path=seg_file,
-            show_timestamp=True
+            show_timestamp=show_timestamp,
+            crf=crf,
+            preset=preset
         )
 
         try:
@@ -254,19 +267,19 @@ def merge_videos(
                 # 生成纯黑替代片段
                 _generate_black_segment(
                     seg_file, slot.duration,
-                    output_width, output_height, fps
+                    output_width, output_height, fps, crf, preset
                 )
         except subprocess.TimeoutExpired:
             print(f"\n   ⚠ 片段 {i} 处理超时，用黑屏替代")
             _generate_black_segment(
                 seg_file, slot.duration,
-                output_width, output_height, fps
+                output_width, output_height, fps, crf, preset
             )
         except Exception as e:
             print(f"\n   ⚠ 片段 {i} 异常: {e}")
             _generate_black_segment(
                 seg_file, slot.duration,
-                output_width, output_height, fps
+                output_width, output_height, fps, crf, preset
             )
 
     print(f"\n\n   ✅ 所有片段处理完成，开始合并...")
@@ -341,7 +354,9 @@ def _generate_black_segment(
     duration: float,
     width: int,
     height: int,
-    fps: float
+    fps: float,
+    crf: int = 28,
+    preset: str = "faster"
 ):
     """生成纯黑色替代片段（当某个片段处理失败时使用）"""
     cmd = [
@@ -349,8 +364,8 @@ def _generate_black_segment(
         '-f', 'lavfi',
         '-i', f'color=c=black:s={width}x{height}:d={duration}:r={fps}',
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '28',
+        '-preset', preset,
+        '-crf', str(crf),
         '-pix_fmt', 'yuv420p',
         output_path
     ]
