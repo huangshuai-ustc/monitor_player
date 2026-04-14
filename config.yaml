@@ -1,10 +1,10 @@
 cameras:
-  - name: "南地"
-    folder: "./20250613/南地"
-  - name: "南地前"
-    folder: "./20250613/南地前"
-  - name: "家后"
-    folder: "./20250613/家后"
+  - name: "north_behind"
+    folder: "./20250613/north_behind"
+  - name: "north_front"
+    folder: "./20250613/north_front"
+  - name: "home"
+    folder: "./20250613/home"
 
 # 文件名格式 - 用正则捕获开始和结束时间
 # 你的格式: video_0400_0_10_20250613113832_20250613115449.mp4
@@ -13,4 +13,5 @@ time_format: "%Y%m%d%H%M%S"
 
 server:
   host: "0.0.0.0"
+  
   port: 8080
