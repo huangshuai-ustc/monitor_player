@@ -13,5 +13,4 @@ time_format: "%Y%m%d%H%M%S"
 
 server:
   host: "0.0.0.0"
-  
   port: 8080
